@@ -157,6 +157,11 @@ class Nameless2API
                     $this->removeGroupFromDiscord();
                     break;
 
+                case 'setProfileData':
+                    // Set a user's group
+                    $this->setProfileData();
+                    break;
+
                 case 'createReport':
                     // Create a new report
                     $this->createReport();
@@ -454,15 +459,17 @@ class Nameless2API
 
             // Get link + template
             $link =  Util::getSelfURL() . ltrim(URL::build('/complete_signup/', 'c=' . $code), '/');
+            $path = join(DIRECTORY_SEPARATOR, array(ROOT_PATH, 'custom', 'templates', TEMPLATE, 'email', 'register.html'));
+            $html = file_get_contents($path);
 
-            $html = Email::formatEmail('register', $this->_language);
+            $html = str_replace(array('[Sitename]', '[Register]', '[Greeting]', '[Message]', '[Link]', '[Thanks]'), array(SITE_NAME, $this->_language->get('general', 'register'), $this->_language->get('user', 'email_greeting'), $this->_language->get('user', 'email_message'), $link, $this->_language->get('user', 'email_thanks')), $html);
 
             if($mailer == '1'){
                 // PHP Mailer
                 $email = array(
                     'to' => array('email' => Output::getClean($email), 'name' => Output::getClean($username)),
-                    'subject' => SITE_NAME . ' - ' . $this->_language->get('emails', 'register_subject'),
-                    'message' => str_replace('[Link]', $link, $html)
+                    'subject' => SITE_NAME . ' - ' . $this->_language->get('general', 'register'),
+                    'message' => $html
                 );
 
                 $sent = Email::send($email, 'mailer');
@@ -485,7 +492,7 @@ class Nameless2API
                 $siteemail = $siteemail->first()->value;
 
                 $to      = $email;
-                $subject = SITE_NAME . ' - ' . $this->_language->get('emails', 'register_subject');
+                $subject = SITE_NAME . ' - ' . $this->_language->get('general', 'register');
 
                 $headers = 'From: ' . $siteemail . "\r\n" .
                     'Reply-To: ' . $siteemail . "\r\n" .
@@ -496,7 +503,7 @@ class Nameless2API
                 $email = array(
                     'to' => $to,
                     'subject' => $subject,
-                    'message' => str_replace('[Link]', $link, $html),
+                    'message' => $html,
                     'headers' => $headers
                 );
 
@@ -546,6 +553,7 @@ class Nameless2API
             $this->_db = DB::getInstance();
 
             // Check UUID
+            //$user = $this->_db->query('SELECT nl2_users.username, nl2_users.nickname as displayname, nl2_users.uuid, nl2_users.group_id, nl2_users.joined as registered, nl2_users.isbanned as banned, nl2_users.active as validated, nl2_groups.name as group_name FROM nl2_users LEFT JOIN nl2_groups ON nl2_users.group_id = nl2_groups.id WHERE nl2_users.username = ? OR nl2_users.uuid = ?', array($query, $query));
             $user = $this->_db->query('SELECT nl2_users.id, nl2_users.username, nl2_users.nickname as displayname, nl2_users.uuid, nl2_users.group_id, nl2_users.joined as registered, nl2_users.isbanned as banned, nl2_users.active as validated, nl2_users.user_title as userTitle, nl2_groups.name as group_name FROM nl2_users LEFT JOIN nl2_groups ON nl2_users.group_id = nl2_groups.id WHERE nl2_users.username = ? OR nl2_users.uuid = ?', array($query, $query));
 
             if(!$user->count()){
@@ -566,6 +574,60 @@ class Nameless2API
         } else $this->throwError(1, $this->_language->get('api', 'invalid_api_key'));
     }
 
+    private function setProfileData(){
+        if ($this->_validated === true) {
+            if(!isset($_POST) || empty($_POST) || !isset($_POST['uuid']) || empty($_POST['uuid']) || !isset($_POST['field_name']) || !isset($_POST['field_value'])){
+                $this->throwError(6, $this->_language->get('api', 'invalid_post_contents'));
+            }
+
+            // Remove -s from UUID (if present)
+            if(isset($_POST['uuid'])) {
+                $_POST['uuid'] = str_replace('-', '', $_POST['uuid']);
+            }
+
+            $this->_db = DB::getInstance();
+
+            // Ensure user exists
+            $user = $this->_db->get('users', array('uuid', '=', htmlspecialchars($_POST['uuid'])));
+            if(!$user->count()) {
+                $this->throwError(16, $this->_language->get('api', 'unable_to_find_user'));
+            }
+            $user = $user->first()->id;
+            $datavals = $this->_db->query('SELECT * from nl2_users_profile_fields pf_values LEFT JOIN nl2_profile_fields fields ON pf_values.field_id = fields.id WHERE pf_values.user_id = ? and fields.name = ?', array($user,$_POST['field_name']));
+            $update = false;
+            $fieldid = 0;
+            if ($datavals->count() > 0) {
+                foreach ($datavals->results() as $dataval) {
+                    if ($dataval->name == $_POST['field_name']) {
+                        // Exists
+                        $update = true;
+                        $fieldid = $dataval->field_id;
+                        break;
+                    }
+                }
+            }
+            if ($update){
+                //Update the users profile field
+                try {
+                    $this->_db->query('UPDATE nl2_users_profile_fields SET value = ? WHERE id = ?',array($_POST['field_value'],$fieldid));
+                } catch(Exception $e){
+                    $this->throwError(6,$this->_language->get('api','field_update_failed'));
+                }
+                $this->returnArray(array('message' => 'field_updated'));
+            }
+            else{
+                //No profile_field yet exists for this user, create one
+                $fieldids = $this->_db->query('SELECT id FROM nl2_profile_fields WHERE name = ?', array($_POST['field_name']));
+                if ($fieldids->count() == 0) {
+                    $this->throwError(6,$this->_language->get('api','invalid_field_name'));
+                } else {
+                    $this->_db->query('INSERT INTO nl2_users_profile_fields VALUES(?,?,?,?)',array(0,$user,$fieldids->first()->id,$_POST['field_value']));
+                    $this->returnArray(array('message' => 'field_created'));
+                }
+            }
+        }
+    }
+    
     // Set a user's group
     private function setGroup(){
         // Ensure the API key is valid
